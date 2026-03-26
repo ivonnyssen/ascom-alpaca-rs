@@ -234,8 +234,13 @@ impl Server {
         self.bind().await?.start().await
     }
 
+    /// Consumes the server and returns the underlying [`axum::Router`].
+    ///
+    /// Use this when you need to handle socket binding and TLS wrapping
+    /// yourself instead of using [`Self::bind`]. The caller is responsible
+    /// for starting the Alpaca discovery server separately if needed.
     #[expect(clippy::too_many_lines)]
-    fn into_router(self) -> Router {
+    pub fn into_router(self) -> Router {
         let devices = Arc::new(self.devices);
         let server_info = Arc::new(self.info);
         let connecting_devices = Arc::new(RwLock::new(FnvHashSet::default()));
