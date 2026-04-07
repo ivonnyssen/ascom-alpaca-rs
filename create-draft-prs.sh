@@ -96,25 +96,39 @@ echo "=== 4/7: pr/integer-parameter-handling ==="
 gh pr create --draft --repo "$UPSTREAM" \
   --head "$FORK_OWNER:pr/integer-parameter-handling" \
   --base main \
-  --title "Widen integer parameter parsing to i64 and improve error codes" \
+  --title "Custom integer deserializer: INVALID_VALUE for out-of-range, i64 for uint32 support" \
   --body "$(cat <<'EOF'
 ## Summary
 
-Introduces a custom serde deserializer for ALPACA integer parameters that distinguishes between parse errors (HTTP 400 / BadParameter) and range errors (ASCOM INVALID_VALUE). Widens the intermediate parse type from i32 to i64 to support uint32 parameters like `ClientID` and `ClientTransactionID`.
+Replaces the generic `serde_plain::from_str` integer parsing with a custom ALPACA-aware deserializer that:
+
+1. Parses integer parameters as i64 first, then narrows to the target type
+2. Returns ASCOM `INVALID_VALUE` (error 1025) for values that parse but are out of range
+3. Returns HTTP 400 `BadParameter` only for genuinely unparseable input
+4. Special-cases `usize` index parameters to return `INVALID_VALUE` for negative values
+
+Closes RReverser/ascom-alpaca-rs#5
 
 ## Motivation
 
-`ClientID` and `ClientTransactionID` are uint32 per the ASCOM Alpaca spec, so values above i32::MAX (like 2147483648) must parse successfully. With the current i32 intermediate parse, these valid uint32 values are rejected. Widening to i64 as the intermediate type allows the full uint32 range to be accepted and then narrowed to the target type.
+**INVALID_VALUE vs BadRequest (issue #5):** The current implementation maps all integer deserialization failures to `BadParameter` (HTTP 400). The ASCOM Alpaca spec and ConformU conformance tests require that parseable values which are out of range for the target type return `INVALID_VALUE` (HTTP 200, error 1025) instead. For example, sending `Id=999` to a switch with only 4 ports should return `INVALID_VALUE`, not a 400.
 
-The custom deserializer also properly distinguishes parse errors from range errors per spec — unparseable values return HTTP 400, while parseable-but-out-of-range values return ASCOM `InvalidValue` (error 1025).
+**uint32 overflow:** `ClientID` and `ClientTransactionID` are uint32 per spec, so values above i32::MAX (e.g. 2147483648) must parse successfully. The previous code used `serde_plain::from_str` which parses directly to the target type with no intermediate widening, so valid uint32 values were rejected. Using i64 as the intermediate type covers the full uint32 range.
+
+## How it works
+
+The existing specialization block in `params.rs` (which already had special paths for `String` and `bool`) is extended with a custom `AlpacaDeserializer` for integers. The deserializer:
+
+1. Parses the raw string as `i64` — if this fails, it's a `BadFormat` → HTTP 400
+2. Attempts `T::try_from(i64_value)` — if this fails, it's `OutOfRange` → ASCOM `INVALID_VALUE`
+3. On success, visits the appropriate serde integer method
 
 ## Changes
 
 - `src/server/params.rs`:
   - Added `AlpacaParseError` enum with `BadFormat` and `OutOfRange` variants
-  - Added `AlpacaDeserializer` that parses integers as i64, then converts to the target type
+  - Added `AlpacaDeserializer` implementing serde `Deserializer` with all integer visitor methods (i8 through u64)
   - Special-cases `usize` parameters to return `InvalidValue` for negative values
-  - Implements all integer visitor methods (i8 through u64)
   - Comprehensive test suite covering parse errors, range errors, and edge cases
 - `src/server/error.rs`: Added `ParameterOutOfRange` variant with i64 value
 - `src/server/response.rs`: Maps `ParameterOutOfRange` to ASCOM `INVALID_VALUE` response
@@ -126,6 +140,7 @@ The custom deserializer also properly distinguishes parse errors from range erro
 - [ ] Integer parse errors return HTTP 400
 - [ ] Integer range errors return ASCOM INVALID_VALUE (1025)
 - [ ] uint32 values (e.g. 2147483648) parse successfully for u32 targets
+- [ ] Negative index values return INVALID_VALUE, not 400
 EOF
 )"
 
