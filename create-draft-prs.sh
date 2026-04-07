@@ -16,13 +16,11 @@ gh pr create --draft --repo "$UPSTREAM" \
   --body "$(cat <<'EOF'
 ## Summary
 
-Adds the missing `cancel_async` method to the `Switch` trait, completing ISwitchV3 compliance. The method follows the same pattern as the existing `set_async` and `set_async_value` methods — it has a default implementation returning `NOT_IMPLEMENTED`.
-
-Without this method, switch devices that support asynchronous operations have no way to cancel a pending operation via the ASCOM Alpaca API.
+Adds the missing `cancel_async` method to the `Switch` trait for ISwitchV3 compliance. The method follows the same pattern as the existing `set_async` and `set_async_value` methods — default implementation returns `NOT_IMPLEMENTED`.
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) we use `Switch` devices to control observatory power strips. Some switch operations are asynchronous (e.g. powering up a mount with a delayed response), and we need `cancel_async` to abort these when the user cancels an imaging sequence.
+The ISwitchV3 specification defines `CancelAsync` as a required method, but the trait currently only has `set_async`, `set_async_value`, and `state_change_complete`. Adding `cancel_async` completes the ISwitchV3 surface and allows implementations to pass ConformU conformance testing for switches with async operations.
 
 ## Changes
 
@@ -48,7 +46,7 @@ Changes `Server::into_router()` from `fn` to `pub fn`, allowing consumers to obt
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) we terminate TLS at the Alpaca server using `axum-server` with `rustls`. The current API only exposes `Server::listen()` and `Server::bind()`, both of which bind to a plain TCP socket internally. By making `into_router()` public, consumers can wrap the router in their own `axum_server::bind_rustls()` call without duplicating the entire route setup.
+The current API only exposes `Server::listen()` and `Server::bind()`, both of which bind to a plain TCP socket internally. For TLS termination at the Alpaca server (e.g. using `axum-server` with `rustls`), consumers need access to the router so they can wrap it in their own `axum_server::bind_rustls()` call without duplicating the entire route setup.
 
 ## Changes
 
@@ -74,7 +72,7 @@ Adds `Client::new_with_client(base_url, reqwest::Client)` as a companion to the 
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) the Alpaca server runs behind a TLS reverse proxy with a self-signed CA. The default `reqwest::Client` rejects the certificate. We need to inject a client configured with `.add_root_certificate(ca)` and HTTP Basic Auth default headers. This also enables other use cases like custom timeouts, proxy configuration, or connection pooling tuning.
+When connecting to an Alpaca server behind TLS with a private CA, the default `reqwest::Client` rejects the certificate. Callers need to inject a client configured with `.add_root_certificate(ca)`. Similarly, servers requiring HTTP Basic Auth need default headers set on the client. There is currently no way to customize the HTTP client used by the Alpaca `Client`.
 
 ## Changes
 
@@ -98,7 +96,7 @@ echo "=== 4/7: pr/integer-parameter-handling ==="
 gh pr create --draft --repo "$UPSTREAM" \
   --head "$FORK_OWNER:pr/integer-parameter-handling" \
   --base main \
-  --title "Improve integer parameter parsing with proper ASCOM error codes" \
+  --title "Widen integer parameter parsing to i64 and improve error codes" \
   --body "$(cat <<'EOF'
 ## Summary
 
@@ -106,14 +104,9 @@ Introduces a custom serde deserializer for ALPACA integer parameters that distin
 
 ## Motivation
 
-The ASCOM Alpaca specification requires that:
-1. Unparseable values return HTTP 400 (bad request)
-2. Parseable values that are out of range for the target type return an ASCOM `InvalidValue` error (HTTP 200 with error number 1025)
-3. Negative values for unsigned index parameters return `InvalidValue`, not a parse error
+`ClientID` and `ClientTransactionID` are uint32 per the ASCOM Alpaca spec, so values above i32::MAX (like 2147483648) must parse successfully. With the current i32 intermediate parse, these valid uint32 values are rejected. Widening to i64 as the intermediate type allows the full uint32 range to be accepted and then narrowed to the target type.
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) we run ConformU conformance tests against our server, and these tests specifically verify this distinction. Without this change, all integer errors are reported as HTTP 400, causing ConformU test failures.
-
-Additionally, `ClientID` and `ClientTransactionID` are uint32 per spec, so values above i32::MAX (like 2147483648) must parse successfully — requiring i64 as the intermediate type.
+The custom deserializer also properly distinguishes parse errors from range errors per spec — unparseable values return HTTP 400, while parseable-but-out-of-range values return ASCOM `InvalidValue` (error 1025).
 
 ## Changes
 
@@ -148,7 +141,7 @@ Adds `ConformUTestBuilder` that allows configuring ConformU test parameters via 
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) CI, ConformU tests for switch devices take a long time with the default `SwitchReadDelay` and `SwitchWriteDelay` values. We use a settings file to reduce these delays, cutting CI test time significantly. The existing `run_conformu_tests` function provides no way to pass a settings file.
+ConformU tests for switch devices are slow with the default `SwitchReadDelay` and `SwitchWriteDelay` values. In CI, this adds up significantly. A settings file can override these delays to speed up test runs, but the existing `run_conformu_tests` function provides no way to pass one.
 
 ## API
 
@@ -196,7 +189,7 @@ The main adaptation is a `GroupedInterface` struct that re-groups `if-addrs`' pe
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) our primary development environment is macOS. Without this fix, the crate doesn't compile on macOS at all, blocking local development and testing.
+This blocks running CI on macOS. The crate does not compile on macOS at all with the current `netdev` dependency.
 
 ## Changes
 
@@ -208,8 +201,8 @@ In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) our primary develo
 
 ## Test plan
 
-- [x] `cargo clippy` passes (full CI feature matrix verified)
-- [ ] Compiles on macOS (verified locally)
+- [x] `cargo clippy` passes (full CI feature matrix verified on Linux)
+- [ ] Compiles on macOS
 - [ ] Discovery still works on multi-homed hosts
 - [ ] Loopback interfaces correctly excluded from discovery
 EOF
@@ -227,9 +220,7 @@ Changes `Server`'s discovery port from `u16` to `Option<u16>`, allowing the disc
 
 ## Motivation
 
-In [rusty-photon](https://github.com/ivonnyssen/rusty-photon) we run the Alpaca server behind a TLS reverse proxy (nginx). The ASCOM discovery protocol is UDP-based and doesn't support TLS, so advertising a discovery endpoint that clients can't actually use over TLS is misleading. We disable discovery and instead configure clients with the server URL directly.
-
-Additionally, in integration tests we sometimes need to bind multiple servers on different ports, and having each one also try to bind a discovery UDP socket causes port conflicts. Disabling discovery for test servers avoids this.
+When running multiple Alpaca servers in integration tests, each server tries to bind the discovery UDP socket, causing port conflicts. Making the discovery server optional allows test servers to skip discovery binding entirely, avoiding these conflicts.
 
 ## Changes
 
