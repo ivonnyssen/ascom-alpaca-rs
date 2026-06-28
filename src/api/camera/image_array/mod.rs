@@ -62,8 +62,23 @@ pub(crate) enum ImageElementType {
     I32 = 2,
 }
 
-trait AsTransmissionElementType: 'static + Into<i32> + AnyBitPattern {
+trait AsTransmissionElementType: Into<i32> + AnyBitPattern {
     const TYPE: TransmissionElementType;
+
+    /// Decode an unaligned response buffer into widened `i32` pixels.
+    /// Used by the unaligned-input slow path of `cast_raw_data` (see
+    /// `image_array/client.rs`) when `bytemuck::try_cast_slice` can't
+    /// reinterpret in place.
+    #[cfg(feature = "client")]
+    fn widen_unaligned(data: &[u8]) -> Result<Vec<i32>, bytemuck::PodCastError> {
+        let chunks = data.chunks_exact(size_of::<Self>());
+        if !chunks.remainder().is_empty() {
+            return Err(bytemuck::PodCastError::OutputSliceWouldHaveSlop);
+        }
+        Ok(chunks
+            .map(|c| bytemuck::pod_read_unaligned::<Self>(c).into())
+            .collect())
+    }
 }
 
 impl AsTransmissionElementType for i16 {
