@@ -48,7 +48,7 @@ fn target_tag(event: &tracing::Event<'_>) -> Option<Tag> {
     Some(builder.build())
 }
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn prepare_test_env() {
     use tracing::Level;
 
